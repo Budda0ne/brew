@@ -77,3 +77,4 @@ brew install username/repo/vim       # installs from your custom repository
 As a result, we recommend you give formulae a different name if you want to make
 them easier to install. Note that there is (intentionally) no way of replacing
 dependencies of core formulae with those from taps.
+

@@ -39,8 +39,6 @@ module Homebrew
       DEFAULT_CURL_ARGS = [
         # Follow redirections to handle mirrors, relocations, etc.
         "--location",
-        "--connect-timeout", CURL_CONNECT_TIMEOUT,
-        "--max-time", CURL_MAX_TIME
       ].freeze
 
       # `curl` arguments used in `Strategy#page_headers` method.
@@ -62,18 +60,28 @@ module Homebrew
 
       # Baseline `curl` options used in {Strategy} methods.
       DEFAULT_CURL_OPTIONS = {
-        print_stdout: false,
-        print_stderr: false,
-        debug:        false,
-        verbose:      false,
-        timeout:      CURL_PROCESS_TIMEOUT,
-        retry:        false,
+        print_stdout:    false,
+        print_stderr:    false,
+        debug:           false,
+        verbose:         false,
+        timeout:         CURL_PROCESS_TIMEOUT,
+        connect_timeout: CURL_CONNECT_TIMEOUT,
+        max_time:        CURL_MAX_TIME,
+        retries:         0,
       }.freeze
 
       # HTTP response head(s) and body are typically separated by a double
       # `CRLF` (whereas HTTP header lines are separated by a single `CRLF`).
       # In rare cases, this can also be a double newline (`\n\n`).
       HTTP_HEAD_BODY_SEPARATOR = "\r\n\r\n"
+
+      # A regex used to identify a tarball extension at the end of a string.
+      TARBALL_EXTENSION_REGEX = /
+        \.t
+        (?:ar(?:\.(?:bz2|gz|lz|lzma|lzo|xz|Z|zst))?|
+        b2|bz2?|z2|az|gz|lz|lzma|xz|Z|aZ|zst)
+        $
+      /ix.freeze
 
       # An error message to use when a `strategy` block returns a value of
       # an inappropriate type.
@@ -239,10 +247,8 @@ module Homebrew
           return data
         end
 
-        /^(?<error_msg>curl: \(\d+\) .+)/ =~ stderr
-        {
-          messages: [error_msg.presence || "cURL failed without an error"],
-        }
+        error_msgs = stderr&.scan(/^curl:.+$/)
+        { messages: error_msgs.presence || ["cURL failed without a detectable error"] }
       end
 
       # Handles the return value from a `strategy` block in a `livecheck`

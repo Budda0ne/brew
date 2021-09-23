@@ -263,7 +263,8 @@ module Homebrew
 
           next unless @core_tap
 
-          if self.class.aliases.include?(dep.name)
+          # we want to allow uses_from_macos for aliases but not bare dependencies
+          if self.class.aliases.include?(dep.name) && spec.uses_from_macos_names.exclude?(dep.name)
             problem "Dependency '#{dep.name}' is an alias; use the canonical name '#{dep.to_formula.full_name}'."
           end
 
@@ -412,11 +413,21 @@ module Homebrew
 
       return unless DevelopmentTools.curl_handles_most_https_certificates?
 
+      use_homebrew_curl = false
+      %w[Stable HEAD].each do |name|
+        spec_name = name.downcase.to_sym
+        next unless (spec = formula.send(spec_name))
+
+        use_homebrew_curl = spec.using == :homebrew_curl
+        break if use_homebrew_curl
+      end
+
       if (http_content_problem = curl_check_http_content(homepage,
                                                          "homepage URL",
-                                                         user_agents:   [:browser, :default],
-                                                         check_content: true,
-                                                         strict:        @strict))
+                                                         user_agents:       [:browser, :default],
+                                                         check_content:     true,
+                                                         strict:            @strict,
+                                                         use_homebrew_curl: use_homebrew_curl))
         problem http_content_problem
       end
     end
@@ -531,7 +542,8 @@ module Homebrew
 
         ra = ResourceAuditor.new(
           spec, spec_name,
-          online: @online, strict: @strict, only: @only, except: except
+          online: @online, strict: @strict, only: @only, except: except,
+          use_homebrew_curl: spec.using == :homebrew_curl
         ).audit
         ra.problems.each do |message|
           problem "#{name}: #{message}"

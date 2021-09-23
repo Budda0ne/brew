@@ -160,6 +160,9 @@ module Homebrew
       def minor?; end
 
       sig { returns(T.nilable(String)) }
+      def bottle_tag; end
+
+      sig { returns(T.nilable(String)) }
       def tag; end
 
       sig { returns(T.nilable(String)) }
@@ -287,6 +290,9 @@ module Homebrew
 
       sig { returns(T.nilable(T::Array[String])) }
       def groups; end
+
+      sig { returns(T::Boolean) }
+      def write_only?; end
     end
   end
 end

@@ -64,7 +64,7 @@ class Formula
   include Utils::Shebang
   include Utils::Shell
   include Context
-  include OnOS
+  include OnOS # TODO: 3.3.0: deprecate OnOS usage in instance methods.
   extend Enumerable
   extend Forwardable
   extend Cachable
@@ -310,7 +310,13 @@ class Formula
 
   # The path that was specified to find this formula.
   def specified_path
-    alias_path || path
+    default_specified_path = Pathname(alias_path) if alias_path.present?
+    default_specified_path ||= path
+
+    return default_specified_path if default_specified_path.presence&.exist?
+    return local_bottle_path if local_bottle_path.presence&.exist?
+
+    default_specified_path
   end
 
   # The name specified to find this formula.
@@ -371,9 +377,9 @@ class Formula
 
   # The Bottle object for given tag.
   # @private
-  sig { params(tag: T.nilable(String)).returns(T.nilable(Bottle)) }
+  sig { params(tag: T.nilable(Symbol)).returns(T.nilable(Bottle)) }
   def bottle_for_tag(tag = nil)
-    Bottle.new(self, bottle_specification, tag) if bottled?
+    Bottle.new(self, bottle_specification, tag) if bottled?(tag)
   end
 
   # The description of the software.
@@ -487,6 +493,9 @@ class Formula
   # Dependencies provided by macOS for the currently active {SoftwareSpec}.
   delegate uses_from_macos_elements: :active_spec
 
+  # Dependency names provided by macOS for the currently active {SoftwareSpec}.
+  delegate uses_from_macos_names: :active_spec
+
   # The {Requirement}s for the currently active {SoftwareSpec}.
   delegate requirements: :active_spec
 
@@ -520,7 +529,7 @@ class Formula
   # exists and is not empty.
   # @private
   def latest_version_installed?
-    latest_prefix = if ENV["HOMEBREW_JSON_CORE"].present? &&
+    latest_prefix = if !head? && ENV["HOMEBREW_INSTALL_FROM_API"].present? &&
                        (latest_pkg_version = Homebrew::API::Versions.latest_formula_version(name))
       prefix latest_pkg_version
     else
@@ -1340,7 +1349,7 @@ class Formula
     Formula.cache[:outdated_kegs][cache_key] ||= begin
       all_kegs = []
       current_version = T.let(false, T::Boolean)
-      latest_version = if ENV["HOMEBREW_JSON_CORE"].present? && (core_formula? || tap.blank?)
+      latest_version = if !head? && ENV["HOMEBREW_INSTALL_FROM_API"].present? && (core_formula? || tap.blank?)
         Homebrew::API::Versions.latest_formula_version(name) || pkg_version
       else
         pkg_version
@@ -1588,6 +1597,39 @@ class Formula
       Time.now.utc
     end
   end
+
+  # Replaces a universal binary with its native slice.
+  #
+  # If called with no parameters, does this with all compatible
+  # universal binaries in a {Formula}'s {Keg}.
+  sig { params(targets: T.nilable(T.any(Pathname, String))).void }
+  def deuniversalize_machos(*targets)
+    targets = nil if targets.blank?
+    targets ||= any_installed_keg.mach_o_files.select do |file|
+      file.arch == :universal && file.archs.include?(Hardware::CPU.arch)
+    end
+
+    targets.each { |t| extract_macho_slice_from(Pathname.new(t), Hardware::CPU.arch) }
+  end
+
+  # @private
+  sig { params(file: Pathname, arch: T.nilable(Symbol)).void }
+  def extract_macho_slice_from(file, arch = Hardware::CPU.arch)
+    odebug "Extracting #{arch} slice from #{file}"
+    file.ensure_writable do
+      macho = MachO::FatFile.new(file)
+      native_slice = macho.extract(Hardware::CPU.arch)
+      native_slice.write file
+      MachO.codesign! file if Hardware::CPU.arm?
+    rescue MachO::MachOBinaryError
+      onoe "#{file} is not a universal binary"
+      raise
+    rescue NoMethodError
+      onoe "#{file} does not contain an #{arch} slice"
+      raise
+    end
+  end
+  private :extract_macho_slice_from
 
   # an array of all core {Formula} names
   # @private
@@ -1870,7 +1912,6 @@ class Formula
   # @private
   def to_hash
     dependencies = deps
-    uses_from_macos = uses_from_macos_elements || []
 
     hsh = {
       "name"                     => name,
@@ -1908,7 +1949,7 @@ class Formula
       "optional_dependencies"    => dependencies.select(&:optional?)
                                                 .map(&:name)
                                                 .uniq,
-      "uses_from_macos"          => uses_from_macos.uniq,
+      "uses_from_macos"          => uses_from_macos_elements.uniq,
       "requirements"             => [],
       "conflicts_with"           => conflicts.map(&:name),
       "caveats"                  => caveats&.gsub(HOMEBREW_PREFIX, "$(brew --prefix)"),
@@ -1999,17 +2040,17 @@ class Formula
       "root_url" => bottle_spec.root_url,
       "files"    => {},
     }
-    bottle_spec.collector.each_key do |os|
-      collector_os = bottle_spec.collector[os]
-      os_cellar = collector_os[:cellar]
-      os_cellar = os_cellar.is_a?(Symbol) ? os_cellar.inspect : os_cellar
+    bottle_spec.collector.each_tag do |tag|
+      tag_spec = bottle_spec.collector.specification_for(tag)
+      os_cellar = tag_spec.cellar
+      os_cellar = os_cellar.inspect if os_cellar.is_a?(Symbol)
 
-      checksum = collector_os[:checksum].hexdigest
-      filename = Bottle::Filename.create(self, os, bottle_spec.rebuild)
+      checksum = tag_spec.checksum.hexdigest
+      filename = Bottle::Filename.create(self, tag, bottle_spec.rebuild)
       path, = Utils::Bottles.path_resolved_basename(bottle_spec.root_url, name, checksum, filename)
       url = "#{bottle_spec.root_url}/#{path}"
 
-      hash["files"][os] = {
+      hash["files"][tag.to_sym] = {
         "cellar" => os_cellar,
         "url"    => url,
         "sha256" => checksum,

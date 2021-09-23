@@ -124,6 +124,8 @@ _brew___cache() {
   case "${cur}" in
     -*)
       __brewcomp "
+      --HEAD
+      --bottle-tag
       --build-from-source
       --cask
       --debug
@@ -520,6 +522,7 @@ _brew_bump_revision() {
       --message
       --quiet
       --verbose
+      --write-only
       "
       return
       ;;
@@ -1418,6 +1421,7 @@ _brew_migrate() {
     -*)
       __brewcomp "
       --debug
+      --dry-run
       --force
       --help
       --quiet

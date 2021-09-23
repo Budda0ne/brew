@@ -67,7 +67,7 @@ module Homebrew
         }],
         [:switch, "--display-times", {
           env:         :display_install_times,
-          description: "Print install times for each formula at the end of the run.",
+          description: "Print install times for each package at the end of the run.",
         }],
       ].each do |options|
         send(*options)
@@ -104,12 +104,10 @@ module Homebrew
     only_upgrade_formulae = formulae.present? && casks.blank?
     only_upgrade_casks = casks.present? && formulae.blank?
 
-    display_messages = !only_upgrade_casks && upgrade_outdated_formulae(formulae, args: args)
-    force_caveats = !only_upgrade_formulae && upgrade_outdated_casks(casks, args: args)
+    upgrade_outdated_formulae(formulae, args: args) unless only_upgrade_casks
+    upgrade_outdated_casks(casks, args: args) unless only_upgrade_formulae
 
-    return unless display_messages
-
-    Homebrew.messages.display_messages(force_caveats: force_caveats, display_times: args.display_times?)
+    Homebrew.messages.display_messages(display_times: args.display_times?)
   end
 
   sig { params(formulae: T::Array[Formula], args: CLI::Args).returns(T::Boolean) }
@@ -160,8 +158,9 @@ module Homebrew
       puts pinned.map { |f| "#{f.full_specified_name} #{f.pkg_version}" } * ", "
     end
 
-    if ENV["HOMEBREW_JSON_CORE"].present?
+    if ENV["HOMEBREW_INSTALL_FROM_API"].present?
       formulae_to_install.map! do |formula|
+        next formula if formula.head?
         next formula if formula.tap.present? && !formula.core_formula?
         next formula unless Homebrew::API::Bottle.available?(formula.name)
 
@@ -187,21 +186,20 @@ module Homebrew
       puts formulae_upgrades.join("\n")
     end
 
-    unless args.dry_run?
-      Upgrade.upgrade_formulae(
-        formulae_to_install,
-        flags:                      args.flags_only,
-        installed_on_request:       args.named.present?,
-        force_bottle:               args.force_bottle?,
-        build_from_source_formulae: args.build_from_source_formulae,
-        interactive:                args.interactive?,
-        keep_tmp:                   args.keep_tmp?,
-        force:                      args.force?,
-        debug:                      args.debug?,
-        quiet:                      args.quiet?,
-        verbose:                    args.verbose?,
-      )
-    end
+    Upgrade.upgrade_formulae(
+      formulae_to_install,
+      flags:                      args.flags_only,
+      dry_run:                    args.dry_run?,
+      installed_on_request:       args.named.present?,
+      force_bottle:               args.force_bottle?,
+      build_from_source_formulae: args.build_from_source_formulae,
+      interactive:                args.interactive?,
+      keep_tmp:                   args.keep_tmp?,
+      force:                      args.force?,
+      debug:                      args.debug?,
+      quiet:                      args.quiet?,
+      verbose:                    args.verbose?,
+    )
 
     Upgrade.check_installed_dependents(
       formulae_to_install,
@@ -224,6 +222,15 @@ module Homebrew
   sig { params(casks: T::Array[Cask::Cask], args: CLI::Args).returns(T::Boolean) }
   def upgrade_outdated_casks(casks, args:)
     return false if args.formula?
+
+    if ENV["HOMEBREW_INSTALL_FROM_API"].present?
+      casks = casks.map do |cask|
+        next cask if cask.tap.present? && cask.tap != "homebrew/cask"
+        next cask unless Homebrew::API::CaskSource.available?(cask.token)
+
+        Cask::CaskLoader.load Homebrew::API::CaskSource.fetch(cask.token)
+      end
+    end
 
     Cask::Cmd::Upgrade.upgrade_casks(
       *casks,

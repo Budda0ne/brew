@@ -1,9 +1,8 @@
-# typed: false
 # frozen_string_literal: true
 
 require "open3"
 
-describe "Bash" do
+RSpec.describe "Bash" do
   matcher :have_valid_bash_syntax do
     match do |file|
       stdout, stderr, status = Open3.capture3("/bin/bash", "-n", file)
@@ -48,7 +47,8 @@ describe "Bash" do
         next if path.directory?
         next if path.symlink?
         next unless path.executable?
-        next unless path.read(12) == "#!/bin/bash\n"
+        next if path.basename.to_s == "cc" # `bash -n` tries to parse the Ruby part
+        next if path.read(12) != "#!/bin/bash\n"
 
         expect(path).to have_valid_bash_syntax
       end

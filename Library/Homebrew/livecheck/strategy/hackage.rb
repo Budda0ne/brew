@@ -1,4 +1,4 @@
-# typed: false
+# typed: strict
 # frozen_string_literal: true
 
 module Homebrew
@@ -17,21 +17,19 @@ module Homebrew
       #
       # @api public
       class Hackage
-        extend T::Sig
-
         # A `Regexp` used in determining if the strategy applies to the URL and
         # also as part of extracting the package name from the URL basename.
-        PACKAGE_NAME_REGEX = /(?<package_name>.+?)-\d+/i.freeze
+        PACKAGE_NAME_REGEX = /(?<package_name>.+?)-\d+/i
 
         # A `Regexp` used to extract the package name from the URL basename.
-        FILENAME_REGEX = /^#{PACKAGE_NAME_REGEX.source.strip}/i.freeze
+        FILENAME_REGEX = /^#{PACKAGE_NAME_REGEX.source.strip}/i
 
         # A `Regexp` used in determining if the strategy applies to the URL.
         URL_MATCH_REGEX = %r{
           ^https?://(?:downloads|hackage)\.haskell\.org
           (?:/[^/]+)+ # Path before the filename
           #{PACKAGE_NAME_REGEX.source.strip}
-        }ix.freeze
+        }ix
 
         # Whether the strategy can be applied to the provided URL.
         #
@@ -42,6 +40,31 @@ module Homebrew
           URL_MATCH_REGEX.match?(url)
         end
 
+        # Extracts information from a provided URL and uses it to generate
+        # various input values used by the strategy to check for new versions.
+        # Some of these values act as defaults and can be overridden in a
+        # `livecheck` block.
+        #
+        # @param url [String] the URL used to generate values
+        # @return [Hash]
+        sig { params(url: String).returns(T::Hash[Symbol, T.untyped]) }
+        def self.generate_input_values(url)
+          values = {}
+
+          match = File.basename(url).match(FILENAME_REGEX)
+          return values if match.blank?
+
+          # A page containing a directory listing of the latest source tarball
+          values[:url] = "https://hackage.haskell.org/package/#{match[:package_name]}/src/"
+
+          regex_name = Regexp.escape(T.must(match[:package_name])).gsub("\\-", "-")
+
+          # Example regex: `%r{<h3>example-(.*?)/?</h3>}i`
+          values[:regex] = %r{<h3>#{regex_name}-(.*?)/?</h3>}i
+
+          values
+        end
+
         # Generates a URL and regex (if one isn't provided) and passes them
         # to {PageMatch.find_versions} to identify versions in the content.
         #
@@ -50,24 +73,16 @@ module Homebrew
         # @return [Hash]
         sig {
           params(
-            url:   String,
-            regex: T.nilable(Regexp),
-            cask:  T.nilable(Cask::Cask),
-            block: T.nilable(
-              T.proc.params(arg0: String, arg1: Regexp).returns(T.any(String, T::Array[String], NilClass)),
-            ),
+            url:    String,
+            regex:  T.nilable(Regexp),
+            unused: T.untyped,
+            block:  T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
-        def self.find_versions(url, regex, cask: nil, &block)
-          match = File.basename(url).match(FILENAME_REGEX)
+        def self.find_versions(url:, regex: nil, **unused, &block)
+          generated = generate_input_values(url)
 
-          # A page containing a directory listing of the latest source tarball
-          page_url = "https://hackage.haskell.org/package/#{match[:package_name]}/src/"
-
-          # Example regex: `%r{<h3>example-(.*?)/?</h3>}i`
-          regex ||= %r{<h3>#{Regexp.escape(match[:package_name])}-(.*?)/?</h3>}i
-
-          PageMatch.find_versions(page_url, regex, cask: cask, &block)
+          PageMatch.find_versions(url: generated[:url], regex: regex || generated[:regex], **unused, &block)
         end
       end
     end

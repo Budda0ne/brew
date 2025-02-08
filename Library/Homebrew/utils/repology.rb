@@ -1,80 +1,100 @@
-# typed: false
+# typed: strict
 # frozen_string_literal: true
 
 require "utils/curl"
 
 # Repology API client.
-#
-# @api private
 module Repology
   HOMEBREW_CORE = "homebrew"
   HOMEBREW_CASK = "homebrew_casks"
-
-  module_function
-
   MAX_PAGINATION = 15
   private_constant :MAX_PAGINATION
 
-  def query_api(_last_package_in_response = "", repository:)
-    {}
-    # TODO: uncomment (and remove lines above) when we have a fix for Repology
-    # `curl` issues
-    # last_package_in_response += "/" if last_package_in_response.present?
-    # url = "https://repology.org/api/v1/projects/#{last_package_in_response}?inrepo=#{repository}&outdated=1"
+  sig { params(last_package_in_response: T.nilable(String), repository: String).returns(T::Hash[String, T.untyped]) }
+  def self.query_api(last_package_in_response = "", repository:)
+    last_package_in_response += "/" if last_package_in_response.present?
+    url = "https://repology.org/api/v1/projects/#{last_package_in_response}?inrepo=#{repository}&outdated=1"
 
-    # output, _errors, _status = curl_output(url.to_s)
-    # JSON.parse(output)
-  end
-
-  def single_package_query(name, repository:)
-    # TODO: uncomment when we have a fix for Repology `curl` issues
-    # url = "https://repology.org/tools/project-by?repo=#{repository}&" \
-    #       "name_type=srcname&target_page=api_v1_project&name=#{name}"
-
-    # output, _errors, _status = curl_output("--location", url.to_s)
-
-    # begin
-    #   data = JSON.parse(output)
-    #   { name => data }
-    # rescue
-    #   nil
-    # end
-  end
-
-  def parse_api_response(limit = nil, repository:)
-    package_term = case repository
-    when HOMEBREW_CORE
-      "formula"
-    when HOMEBREW_CASK
-      "cask"
+    result = Utils::Curl.curl_output(
+      "--silent", url.to_s,
+      use_homebrew_curl: !Utils::Curl.curl_supports_tls13?
+    )
+    JSON.parse(result.stdout)
+  rescue
+    if Homebrew::EnvConfig.developer?
+      $stderr.puts result&.stderr
     else
-      "package"
+      odebug result&.stderr
     end
 
-    ohai "Querying outdated #{package_term.pluralize} from Repology"
+    raise
+  end
+
+  sig { params(name: String, repository: String).returns(T.nilable(T::Hash[String, T.untyped])) }
+  def self.single_package_query(name, repository:)
+    url = "https://repology.org/api/v1/project/#{name}"
+
+    result = Utils::Curl.curl_output(
+      "--location", "--silent", url.to_s,
+      use_homebrew_curl: !Utils::Curl.curl_supports_tls13?
+    )
+
+    data = JSON.parse(result.stdout)
+    { name => data }
+  rescue => e
+    require "utils/backtrace"
+    error_output = [result&.stderr, "#{e.class}: #{e}", Utils::Backtrace.clean(e)].compact
+    if Homebrew::EnvConfig.developer?
+      $stderr.puts(*error_output)
+    else
+      odebug(*error_output)
+    end
+
+    nil
+  end
+
+  sig {
+    params(
+      limit:        T.nilable(Integer),
+      last_package: T.nilable(String),
+      repository:   String,
+    ).returns(T::Hash[String, T.untyped])
+  }
+  def self.parse_api_response(limit = nil, last_package = "", repository:)
+    package_term = case repository
+    when HOMEBREW_CORE
+      "formulae"
+    when HOMEBREW_CASK
+      "casks"
+    else
+      "packages"
+    end
+
+    ohai "Querying outdated #{package_term} from Repology"
 
     page_no = 1
     outdated_packages = {}
-    last_package = ""
 
     while page_no <= MAX_PAGINATION
       odebug "Paginating Repology API page: #{page_no}"
 
-      response = query_api(last_package, repository: repository)
+      response = query_api(last_package, repository:)
       outdated_packages.merge!(response)
-      last_package = response.keys.last
+      last_package = response.keys.max
 
       page_no += 1
-      break if limit && outdated_packages.size >= limit || response.size <= 1
+      break if (limit && outdated_packages.size >= limit) || response.size <= 1
     end
 
-    puts "#{outdated_packages.size} outdated #{package_term.pluralize(outdated_packages.size)} found"
+    package_term = package_term.chop if outdated_packages.size == 1
+    puts "#{outdated_packages.size} outdated #{package_term} found"
     puts
 
-    outdated_packages
+    outdated_packages.sort.to_h
   end
 
-  def latest_version(repositories)
+  sig { params(repositories: T::Array[String]).returns(T.any(String, Version)) }
+  def self.latest_version(repositories)
     # The status is "unique" when the package is present only in Homebrew, so
     # Repology has no way of knowing if the package is up-to-date.
     is_unique = repositories.find do |repo|
@@ -91,6 +111,6 @@ module Repology
     # scheme
     return "no latest version" if latest_version.blank?
 
-    latest_version["version"]
+    Version.new(T.must(latest_version["version"]))
   end
 end

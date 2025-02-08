@@ -1,4 +1,4 @@
-# typed: false
+# typed: strict
 # frozen_string_literal: true
 
 module Homebrew
@@ -14,6 +14,7 @@ module Homebrew
       # * `https://www.x.org/archive/individual/lib/libexample-1.2.3.tar.bz2`
       # * `https://ftp.x.org/archive/individual/lib/libexample-1.2.3.tar.bz2`
       # * `https://www.x.org/pub/individual/doc/example-1.2.3.tar.gz`
+      # * `https://xorg.freedesktop.org/archive/individual/util/example-1.2.3.tar.xz`
       #
       # The notable differences between URLs are as follows:
       #
@@ -38,27 +39,27 @@ module Homebrew
       #
       # @api public
       class Xorg
-        extend T::Sig
-
         NICE_NAME = "X.Org"
 
         # A `Regexp` used in determining if the strategy applies to the URL and
         # also as part of extracting the module name from the URL basename.
-        MODULE_REGEX = /(?<module_name>.+)-\d+/i.freeze
+        MODULE_REGEX = /(?<module_name>.+)-\d+/i
 
         # A `Regexp` used to extract the module name from the URL basename.
-        FILENAME_REGEX = /^#{MODULE_REGEX.source.strip}/i.freeze
+        FILENAME_REGEX = /^#{MODULE_REGEX.source.strip}/i
 
         # The `Regexp` used to determine if the strategy applies to the URL.
         URL_MATCH_REGEX = %r{
           ^https?://(?:[^/]+?\.)* # Scheme and any leading subdomains
-          (?:x\.org/(?:[^/]+/)*individual/(?:[^/]+/)*#{MODULE_REGEX.source.strip}
-          |freedesktop\.org/(?:archive|dist|software)/(?:[^/]+/)*#{MODULE_REGEX.source.strip})
-        }ix.freeze
+          (?:x\.org/(?:[^/]+/)*individual
+            |freedesktop\.org/(?:archive|dist|software)
+            |archive\.mesa3d\.org)
+          /(?:[^/]+/)*#{MODULE_REGEX.source.strip}
+        }ix
 
         # Used to cache page content, so we don't fetch the same pages
         # repeatedly.
-        @page_data = {}
+        @page_data = T.let({}, T::Hash[String, String])
 
         # Whether the strategy can be applied to the provided URL.
         #
@@ -67,6 +68,34 @@ module Homebrew
         sig { params(url: String).returns(T::Boolean) }
         def self.match?(url)
           URL_MATCH_REGEX.match?(url)
+        end
+
+        # Extracts information from a provided URL and uses it to generate
+        # various input values used by the strategy to check for new versions.
+        # Some of these values act as defaults and can be overridden in a
+        # `livecheck` block.
+        #
+        # @param url [String] the URL used to generate values
+        # @return [Hash]
+        sig { params(url: String).returns(T::Hash[Symbol, T.untyped]) }
+        def self.generate_input_values(url)
+          values = {}
+
+          file_name = File.basename(url)
+          match = file_name.match(FILENAME_REGEX)
+          return values if match.blank?
+
+          # /pub/ URLs redirect to the same URL with /archive/, so we replace
+          # it to avoid the redirection. Removing the filename from the end of
+          # the URL gives us the relevant directory listing page.
+          values[:url] = url.sub("x.org/pub/", "x.org/archive/").delete_suffix(file_name)
+
+          regex_name = Regexp.escape(T.must(match[:module_name])).gsub("\\-", "-")
+
+          # Example regex: `/href=.*?example[._-]v?(\d+(?:\.\d+)+)\.t/i`
+          values[:regex] = /href=.*?#{regex_name}[._-]v?(\d+(?:\.\d+)+)\.t/i
+
+          values
         end
 
         # Generates a URL and regex (if one isn't provided) and checks the
@@ -83,32 +112,28 @@ module Homebrew
         # @return [Hash]
         sig {
           params(
-            url:   String,
-            regex: T.nilable(Regexp),
-            cask:  T.nilable(Cask::Cask),
-            block: T.nilable(
-              T.proc.params(arg0: String, arg1: Regexp).returns(T.any(String, T::Array[String], NilClass)),
-            ),
+            url:    String,
+            regex:  T.nilable(Regexp),
+            unused: T.untyped,
+            block:  T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
-        def self.find_versions(url, regex, cask: nil, &block)
-          file_name = File.basename(url)
-          match = file_name.match(FILENAME_REGEX)
-
-          # /pub/ URLs redirect to the same URL with /archive/, so we replace
-          # it to avoid the redirection. Removing the filename from the end of
-          # the URL gives us the relevant directory listing page.
-          page_url = url.sub("x.org/pub/", "x.org/archive/").delete_suffix(file_name)
-
-          # Example regex: `/href=.*?example[._-]v?(\d+(?:\.\d+)+)\.t/i`
-          regex ||= /href=.*?#{Regexp.escape(match[:module_name])}[._-]v?(\d+(?:\.\d+)+)\.t/i
+        def self.find_versions(url:, regex: nil, **unused, &block)
+          generated = generate_input_values(url)
+          generated_url = generated[:url]
 
           # Use the cached page content to avoid duplicate fetches
-          cached_content = @page_data[page_url]
-          match_data = PageMatch.find_versions(page_url, regex, provided_content: cached_content, cask: cask, &block)
+          cached_content = @page_data[generated_url]
+          match_data = PageMatch.find_versions(
+            url:              generated_url,
+            regex:            regex || generated[:regex],
+            provided_content: cached_content,
+            **unused,
+            &block
+          )
 
           # Cache any new page content
-          @page_data[page_url] = match_data[:content] if match_data[:content].present?
+          @page_data[generated_url] = match_data[:content] if match_data[:content].present?
 
           match_data
         end
